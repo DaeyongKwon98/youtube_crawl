@@ -1,171 +1,131 @@
 import yt_dlp
 import os
-import json
 import multiprocessing
+import json
 from tqdm import tqdm
-from multiprocessing import Queue, Process
-
-BASE_DIR = "/mnt/hdd8tb"
-DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
+from multiprocessing import Pool
 
 FAILED_LOG = "failed_ids.txt"
 COMPLETED_LOG = "complete_folders.txt"
 
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
-def load_ids(path):
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
+# 🔧 실패한 video_id 불러오기
+def load_failed_ids():
+    if os.path.exists(FAILED_LOG):
+        with open(FAILED_LOG, "r", encoding="utf-8") as f:
             return set(line.strip() for line in f)
     return set()
 
-def log(path, video_id):
-    with open(path, "a", encoding="utf-8") as f:
+# 🔧 성공한 video_id 불러오기
+def load_completed_ids():
+    if os.path.exists(COMPLETED_LOG):
+        with open(COMPLETED_LOG, "r", encoding="utf-8") as f:
+            return set(line.strip() for line in f)
+    return set()
+
+# 🔧 실패 기록
+def log_failed(video_id, error_msg=""):
+    with open(FAILED_LOG, "a", encoding="utf-8") as f:
+        f.write(f"{video_id}\n")
+    print(f"[ERROR] {video_id} 실패 기록됨. 사유: {error_msg}")
+
+# 🔧 성공 기록
+def log_completed(video_id):
+    with open(COMPLETED_LOG, "a", encoding="utf-8") as f:
         f.write(f"{video_id}\n")
 
-def download_mp4(video_id):
-    url = f"https://www.youtube.com/watch?v={video_id}"
-    video_dir = os.path.join(DOWNLOAD_DIR, video_id)
+def download_video(video_id):
+    if video_id in failed_ids or video_id in completed_ids:
+        print(f">>> {video_id} 이전에 실패 or 완료됨. 건너뜁니다.")
+        return
+
+    url = f'https://www.youtube.com/watch?v={video_id}'
+    # video_dir = os.path.join('downloads', video_id)
+    video_dir = os.path.join('/mnt/hdd8tb/downloads', video_id)
     os.makedirs(video_dir, exist_ok=True)
 
-    mp4_path = os.path.join(video_dir, f"{video_id}.mp4")
-    if os.path.exists(mp4_path):
-        return mp4_path
+    mp4_path = os.path.join(video_dir, f'{video_id}.mp4')
+    mp3_path = os.path.join(video_dir, f'{video_id}_audio.mp3')
+    json_path = os.path.join(video_dir, f'{video_id}.info.json')
 
-    opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'noplaylist': True,
-        'ignoreerrors': True,
-        'cookiefile': '/home/daeyong/llm_music_understanding/youtube_crawl/cookies.txt',
-        'outtmpl': mp4_path,
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4',
-        'merge_output_format': 'mp4',
-        'concurrent_fragment_downloads': 3,
-        'downloader_args': {'http_chunk_size': '1M'},
-    }
+    mp4_exists = os.path.exists(mp4_path)
+    mp3_exists = os.path.exists(mp3_path)
+    json_exists = os.path.exists(json_path)
+
+    if mp4_exists and mp3_exists and json_exists:
+        print(f'>>> {video_id} 모든 파일 이미 있음. 건너뜁니다.')
+        log_completed(video_id)
+        return
 
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([url])
-        return mp4_path
-    except Exception as e:
-        print(f"[MP4 ERROR] {video_id}: {e}")
-        return None
+        def run_dl(opts, desc):
+            print(f'>>> {video_id} - {desc} 다운로드 중...')
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
+            print(f'>>> {video_id} - {desc} 완료!\n')
 
-def extract_mp3(video_id):
-    video_dir = os.path.join(DOWNLOAD_DIR, video_id)
-    mp4_path = os.path.join(video_dir, f"{video_id}.mp4")
-    mp3_path = os.path.join(video_dir, f"{video_id}_audio.mp3")
-    if os.path.exists(mp3_path):
-        return mp3_path
+        common_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'noplaylist': True,
+            'ignoreerrors': True,
+            'cookiefile': '/home/daeyong/llm_music_understanding/youtube_crawl/cookies.txt',
+        }
 
-    opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'cookiefile': '/home/daeyong/llm_music_understanding/youtube_crawl/cookies.txt',
-        'outtmpl': mp3_path,
-        'format': 'bestaudio/best',
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
-    }
+        if not mp4_exists:
+            video_opts = {
+                **common_opts,
+                'outtmpl': os.path.join(video_dir, f'{video_id}.%(ext)s'),
+                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4',
+                'merge_output_format': 'mp4',
+            }
+            run_dl(video_opts, "MP4")
 
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
-        return mp3_path
-    except Exception as e:
-        print(f"[MP3 ERROR] {video_id}: {e}")
-        return None
+        if not mp3_exists:
+            audio_opts = {
+                **common_opts,
+                'outtmpl': os.path.join(video_dir, f'{video_id}_audio.%(ext)s'),
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+            }
+            run_dl(audio_opts, "MP3")
 
-def download_metadata(video_id):
-    json_path = os.path.join(DOWNLOAD_DIR, video_id, f"{video_id}.info.json")
-    if os.path.exists(json_path):
-        return json_path
+        if not json_exists:
+            metadata_opts = {
+                **common_opts,
+                'skip_download': True,
+                'writeinfojson': True,
+                'outtmpl': os.path.join(video_dir, f'{video_id}.%(ext)s'),
+            }
+            run_dl(metadata_opts, "Metadata")
 
-    opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'cookiefile': '/home/daeyong/llm_music_understanding/youtube_crawl/cookies.txt',
-        'outtmpl': os.path.join(DOWNLOAD_DIR, video_id, f"{video_id}.%(ext)s"),
-        'skip_download': True,
-        'writeinfojson': True,
-    }
-
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
-        return json_path
-    except Exception as e:
-        print(f"[JSON ERROR] {video_id}: {e}")
-        return None
-
-def mp4_download_worker(video_id_queue, mp4_done_queue):
-    while True:
-        video_id = video_id_queue.get()
-        if video_id is None:
-            break
-
-        mp4_path = download_mp4(video_id)
-        if mp4_path:
-            mp4_done_queue.put(video_id)
+        # ✅ 다운로드 후 파일 3개 모두 있는지 검증
+        if os.path.exists(mp4_path) and os.path.exists(mp3_path) and os.path.exists(json_path):
+            log_completed(video_id)
         else:
-            log(FAILED_LOG, video_id)
+            log_failed(video_id, "다운로드 후 파일 일부 누락됨")
 
-def postprocess_worker(mp4_done_queue):
-    while True:
-        video_id = mp4_done_queue.get()
-        if video_id is None:
-            break
-
-        mp3_path = extract_mp3(video_id)
-        json_path = download_metadata(video_id)
-
-        video_dir = os.path.join(DOWNLOAD_DIR, video_id)
-        mp4_path = os.path.join(video_dir, f"{video_id}.mp4")
-
-        if all(os.path.exists(p) for p in [mp4_path, mp3_path, json_path]):
-            log(COMPLETED_LOG, video_id)
-        else:
-            log(FAILED_LOG, video_id)
+    except Exception as e:
+        log_failed(video_id, str(e))
 
 if __name__ == '__main__':
-    # json_path = "MMTrail2M.json"
     json_path = "MMTrail2M_half1.json"
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     video_ids = [item['video_id'] for item in data]
 
-    failed_ids = load_ids(FAILED_LOG)
-    completed_ids = load_ids(COMPLETED_LOG)
+    # 🔥 실패 or 완료된 ID 필터링
+    failed_ids = load_failed_ids()
+    completed_ids = load_completed_ids()
+    video_ids = [vid for vid in video_ids if vid not in failed_ids and vid not in completed_ids]
 
-    filtered_ids = [vid for vid in video_ids if vid not in failed_ids and vid not in completed_ids]
-
-    num_download_workers = 4
-    num_post_workers = 2
-
-    video_id_queue = multiprocessing.Queue()
-    mp4_done_queue = multiprocessing.Queue()
-
-    downloaders = [Process(target=mp4_download_worker, args=(video_id_queue, mp4_done_queue)) for _ in range(num_download_workers)]
-    postprocessors = [Process(target=postprocess_worker, args=(mp4_done_queue,)) for _ in range(num_post_workers)]
-
-    for p in downloaders + postprocessors:
-        p.start()
-
-    for vid in tqdm(filtered_ids, desc="Queueing video_ids"):
-        video_id_queue.put(vid)
-
-    for _ in downloaders:
-        video_id_queue.put(None)
-    for p in downloaders:
-        p.join()
-
-    for _ in postprocessors:
-        mp4_done_queue.put(None)
-    for p in postprocessors:
-        p.join()
+    # 병렬 처리 + 진행 바
+    num_workers = 2
+    with Pool(num_workers) as pool:
+        with tqdm(total=len(video_ids), desc="다운로드 진행") as pbar:
+            for _ in pool.imap_unordered(download_video, video_ids):
+                pbar.update(1)
