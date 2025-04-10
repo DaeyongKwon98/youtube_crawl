@@ -13,3 +13,5 @@
 `common_opts` 내부의 `cookie_file`: 크롤링을 위한 쿠키 정보가 저장된 txt file.
 
 `cookies.txt`는 별도 과정을 통해 확보해야 함.
+
+[MMTrail2M 절반 데이터](https://drive.google.com/drive/u/0/folders/1Ur5lnTv0MbbOaZlslQq5vbxw96H46MtH)
